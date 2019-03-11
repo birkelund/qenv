@@ -1,0 +1,5 @@
+ocssd*
+nvme*
+
+# disable irq traces
+-nvme_irq*

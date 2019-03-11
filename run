@@ -1,0 +1,226 @@
+#!/bin/bash
+
+# bash 'strict mode'
+set -euo pipefail
+IFS=$'\n\t'
+
+_warning() {
+	echo "$0: $*" >&2
+}
+
+_error() {
+	echo "$0: $*" >&2
+	exit 1
+}
+
+_usage() {
+	local USAGE="\
+usage: $0 [options]
+
+Options
+  -h, --help            display this help message and exit
+
+  -g, --gdb             run qemu in gdb
+  -o, --ocssd           configure for ocssd emulation
+  -d, --debug           enable guest error debugging
+  -i, --iommu           enable iommu emulation
+  -k, --kernel=IMAGE    kernel to boot
+
+Additional QEMU options
+  $0 ... -- [QEMU option...]"
+
+	case "$1" in
+		err )
+			echo "$USAGE" >&2
+			exit 0
+			;;
+		* )
+			echo "$USAGE"
+			exit 1
+			;;
+	esac
+}
+
+if ! tmp=$(getopt -o 'godik:h' --long 'gdb,ocssd,debug,iommu,kernel:,help' -n "$0" -- "$@"); then
+	exit 1
+fi
+
+eval set -- "$tmp"
+unset tmp
+
+if [[ -r config ]]; then
+	. config
+fi
+
+QEMU_TARGET="${QEMU_TARGET:-qemu-system-x86_64}"
+LOGFILE="${LOGFILE:-log/stderr.log}"
+SSH_PORT="${SSH_PORT:-"2222"}"
+
+if ! command -v "$QEMU_TARGET" > /dev/null; then
+	_error "could not find '$QEMU_TARGET'; set QEMU_TARGET in config"
+fi
+
+BASE_IMG="${BASE_IMG:-img/base.img}"
+if [[ ! -r "$BASE_IMG" ]]; then
+	_error "could not read '$BASE_IMG'; set BASE_IMG in config"
+fi
+
+# kvm acceleration
+args+=("-enable-kvm")
+
+# enabling the iommu requires q35 emulation and kernel_iqrchip=split|off
+args+=("-machine" "type=q35,kernel_irqchip=split")
+
+# memory and cpu setup
+args+=("-m" "4G")
+args+=("-cpu" "host,-avx,-avx2")
+args+=("-smp" "cpus=4")
+
+# boot drive
+args+=("-blockdev" "qcow2,node-name=root,file.driver=file,file.filename=$BASE_IMG")
+args+=("-device" "virtio-blk-pci,drive=root")
+
+# nic
+args+=("-netdev" "user,id=n1,ipv6=off,hostfwd=tcp::$SSH_PORT-:22")
+args+=("-device" "virtio-net-pci,netdev=n1")
+
+# no graphics
+args+=("-nographic")
+
+# host share
+if [[ -v HOSTSHARE ]]; then
+	args+=("-fsdev" "local,id=hostsrc,path=${HOSTSHARE},security_model=none")
+	args+=("-device" "virtio-9p-pci,fsdev=hostsrc,mount_tag=hostsrc")
+fi
+
+# uuid (for SUBNQN)
+args+=("-uuid" "e947cb7d-330e-4614-8afd-ccaa32a17bdd")
+
+# tracing
+if [[ -v EVENTS ]]; then
+	if [[ ! -r "$EVENTS" ]]; then
+		_error "could not read '$EVENTS'"
+	fi
+
+	args+=("-trace" "events=$EVENTS")
+fi
+
+ocssd_emulation=no
+kernel_append_extra=
+run_in_gdb=no
+boot_kernel=
+while true; do
+	case "$1" in
+		'-g' | '--gdb' )
+			run_in_gdb=yes
+			shift
+			;;
+
+		'-o' | '--ocssd' )
+			ocssd_emulation=yes
+			shift
+			;;
+
+		'-d' | '--debug' )
+			# enable additional debugging
+			args+=("-d" "guest_errors")
+			shift
+			;;
+
+		'-i' | '--iommu' )
+			# enable emulated intel iommu
+			args+=("-device" "intel-iommu,pt,intremap")
+			kernel_append_extra="${kernel_append_extra} iommu=pt intel_iommu=on"
+			shift
+			;;
+
+		'-k' | '--kernel' )
+			if [[ ! -r "$2" ]]; then
+				_error "could not read '$2'"
+			fi
+
+			boot_kernel=$2
+			shift 2
+			;;
+
+		'-h' | '--help' )
+			_usage out
+			;;
+
+		'--' )
+			shift
+			break
+			;;
+
+		* )
+			_usage err
+			;;
+	esac
+done
+readonly ocssd_emulation
+readonly kernel_append_extra
+readonly run_in_gdb
+readonly boot_kernel
+
+if [[ "$ocssd_emulation" = "yes" ]]; then
+	# ocssd drive setup
+	DEV_IMG="${BLK_DEV:-img/ocssd.img}"
+	if [[ ! -r "$DEV_IMG" ]]; then
+		_error "could not read '$DEV_IMG'; set DEV_IMG in config"
+	fi
+
+	args+=("-blockdev" "raw,node-name=blk_ocssd01,discard=unmap,detect-zeroes=unmap,file.driver=file,file.filename=$DEV_IMG")
+	device_args="ocssd,drive=blk_ocssd01,serial=deafbeaf,id=ocssd01"
+
+	if [[ -v CHUNKINFO ]]; then
+		device_args="${device_args},chunkinfo=$CHUNKINFO"
+	fi
+
+	if [[ -v RESETFAIL ]]; then
+		device_args="${device_args},resetfail=$RESETFAIL"
+	fi
+
+	if [[ -v WRITEFAIL ]]; then
+		device_args="${device_args},writefail=$WRITEFAIL"
+	fi
+
+	if [[ -v OCSSD_PARAMS ]]; then
+		device_args="${device_args},$OCSSD_PARAMS"
+	fi
+else
+	# conventional drive setup
+	DEV_IMG="${DEV_IMG:-img/nvme.img}"
+	if [[ ! -r "$DEV_IMG" ]]; then
+		_error "could not read '$DEV_IMG'; set DEV_IMG in config"
+	fi
+
+	args+=("-blockdev" "raw,node-name=blk_nvme01,discard=unmap,detect-zeroes=unmap,file.driver=file,file.filename=$DEV_IMG")
+	device_args="nvme,drive=blk_nvme01,serial=deafbeaf,id=nvme01"
+
+	if [[ -v NVME_PARAMS ]]; then
+		device_args="${device_args},$NVME_PARAMS"
+	fi
+fi
+
+if [[ -v COMMON_PARAMS ]]; then
+	device_args="${device_args},$COMMON_PARAMS"
+fi
+
+args+=("-device" "$device_args")
+
+if [[ -n "${boot_kernel}" ]]; then
+	args+=("-kernel" "$boot_kernel")
+	args+=("-append" "root=/dev/vda1 console=ttyS0 audit=0 nokaslr fsck.mode=force ${kernel_append_extra}")
+fi
+
+echo "running: $QEMU_TARGET ${args[@]} $@" > "$LOGFILE"
+
+if [[ "$run_in_gdb" == "yes" ]]; then
+	gdb --args $QEMU_TARGET "${args[@]}" "$@"
+else
+	if ! $QEMU_TARGET "${args[@]}" "$@" 2>> "$LOGFILE"; then
+		ret=$?
+		tail $LOGFILE
+		exit $ret
+	fi
+fi

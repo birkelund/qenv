@@ -1,0 +1,12 @@
+#!/bin/bash
+
+if [[ -r config ]]; then
+	. config
+fi
+
+SSH_HOST_PORT="${SSH_HOST_PORT:-2222}"
+SSH_USER="${SSH_USER:-vagrant}"
+SSH_IDENTITY="${SSH_IDENTITY:-refenv/keys/vagrant}"
+
+chmod 600 "$SSH_IDENTITY"
+ssh -i "$SSH_IDENTITY" -p "$SSH_HOST_PORT" "${SSH_USER}@localhost" $@

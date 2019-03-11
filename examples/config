@@ -1,0 +1,51 @@
+# QEMU target
+# default: qemu-system-x86_64
+#QEMU_TARGET=
+
+# where to log
+# default: log/stderr.log
+#LOGFILE=
+
+# where to bind ssh
+# default: 2222
+#SSH_PORT=
+
+# ssh user
+# default: vagrant
+#SSH_USER=
+
+# ssh identity
+# default: refenv/keys/vagrant
+#SSH_IDENTITY=
+
+# base image (default: img/base.img)
+#BASE_IMG=
+
+# device image
+# default (nvme): img/nvme.img
+# default (ocssd): img/ocssd.img
+#DEV_IMG=img/ocssd.img
+
+# list of events to trace
+# default: none
+#EVENTS=events
+
+# overwrite chunk info
+# default: none
+#CHUNKINFO=state/chunkinfo
+
+# additional common (nvme/ocssd) device parameters
+# default: none
+#COMMON_PARAMS="ms=16"
+
+# additional nvme-only device parameters
+# default: none
+#NVME_PARAMS="cmb_size_mb=128"
+
+# additional ocssd-only device parameters
+# default: none
+#OCSSD_PARAMS="wit=20"
+
+# hostshare
+# default: none
+#HOSTSHARE="$HOME/share"
